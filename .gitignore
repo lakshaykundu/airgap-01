@@ -12,3 +12,4 @@ blob-report
 docs/screenshots/*.tmp.png
 .DS_Store
 .e2e
+.vercel

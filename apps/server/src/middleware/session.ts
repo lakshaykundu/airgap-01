@@ -15,7 +15,7 @@ export function requireSession(sessions: SessionService) {
     const query = (request.query as Record<string, unknown> | undefined)?.session;
     // EventSource cannot set headers, so the SSE route also accepts ?session=.
     const raw = typeof header === 'string' ? header : typeof query === 'string' ? query : undefined;
-    request.sessionId = sessions.require(raw);
+    request.sessionId = await sessions.require(raw);
   };
 }
 

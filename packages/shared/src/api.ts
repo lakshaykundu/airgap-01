@@ -17,6 +17,7 @@ export const ERROR_CODES = [
   'SESSION_NOT_FOUND',
   'RATE_LIMITED',
   'PAYLOAD_TOO_LARGE',
+  'REALTIME_UNAVAILABLE',
   'LIMIT_REACHED',
   'INTERNAL',
 ] as const;
@@ -51,6 +52,8 @@ export interface HealthResponse {
   ok: true;
   time: string;
   uptimeSeconds: number;
+  /** How clients should receive live changes: an SSE stream, or polling (serverless). */
+  realtime: 'sse' | 'poll';
 }
 
 export interface CreateSessionResponse {

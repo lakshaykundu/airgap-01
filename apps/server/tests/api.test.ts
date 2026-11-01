@@ -158,7 +158,7 @@ describe('incident CRUD', () => {
     });
     expect(fetched.statusCode).toBe(410);
     expect((await list(sessionId)).some((i) => i.id === body.id)).toBe(false);
-    expect(built.ctx.repo.countIncidentVersions(sessionId, body.id)).toBe(3);
+    expect(await built.ctx.repo.countIncidentVersions(built.db, sessionId, body.id)).toBe(3);
   });
 
   it('validates payloads with structured 400 errors', async () => {
@@ -274,6 +274,43 @@ describe('idempotency', () => {
   });
 });
 
+describe('concurrency', () => {
+  it('serializes simultaneous retries of one mutation: applied exactly once', async () => {
+    const { sessionId } = await createSession();
+    const key = randomUUID();
+    const body = newIncidentBody();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        app.inject({
+          method: 'POST',
+          url: '/api/incidents',
+          headers: headers(sessionId, key),
+          payload: body,
+        }),
+      ),
+    );
+    expect(results.map((r) => r.statusCode)).toEqual([201, 201, 201, 201, 201]);
+    expect(results.filter((r) => r.headers['idempotent-replay'] === 'true')).toHaveLength(4);
+    expect((await list(sessionId)).filter((i) => i.id === body.id)).toHaveLength(1);
+  });
+
+  it('lets exactly one of two racing updates on the same base version win', async () => {
+    const { sessionId, incidents } = await createSession();
+    const target = incidents[0]!;
+    const [a, b] = await Promise.all(
+      ['First', 'Second'].map((title) =>
+        app.inject({
+          method: 'PATCH',
+          url: `/api/incidents/${target.id}`,
+          headers: headers(sessionId),
+          payload: { baseVersion: target.version, changes: { title } },
+        }),
+      ),
+    );
+    expect([a!.statusCode, b!.statusCode].sort()).toEqual([200, 409]);
+  });
+});
+
 describe('optimistic concurrency', () => {
   it('rejects a stale update with a structured 409', async () => {
     const { sessionId } = await createSession();
@@ -362,7 +399,7 @@ describe('optimistic concurrency', () => {
       payload: stale,
     });
     expect(first.statusCode).toBe(409);
-    expect(built.ctx.repo.getProcessedMutation(sessionId, key)).toBeUndefined();
+    expect(await built.ctx.repo.getProcessedMutation(built.db, sessionId, key)).toBeUndefined();
   });
 });
 
@@ -440,6 +477,24 @@ describe('events', () => {
 });
 
 describe('platform', () => {
+  it('advertises polling and refuses the stream in serverless (poll) mode', async () => {
+    await app.close();
+    built = await buildApp({
+      ...loadConfig({ NODE_ENV: 'test' }),
+      databasePath: ':memory:',
+      realtime: 'poll',
+    });
+    app = built.app;
+    expect((await app.inject({ method: 'GET', url: '/api/health' })).json().realtime).toBe('poll');
+    const { sessionId } = await createSession();
+    const stream = await app.inject({
+      method: 'GET',
+      url: `/api/events/stream?session=${sessionId}`,
+    });
+    expect(stream.statusCode).toBe(503);
+    expect(stream.json().error.code).toBe('REALTIME_UNAVAILABLE');
+  });
+
   it('serves a health check with no-store caching and security headers', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);

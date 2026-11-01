@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { generateIncidentFields, type Incident } from '@airgap/shared';
-import { transaction, type Database } from '../database/db';
+import type { Database, Sql } from '../database/db';
 import type { Repository } from '../database/repository';
 import { ApiError } from '../utils/errors';
 import type { EventBus } from './eventBus';
@@ -8,6 +8,8 @@ import type { EventBus } from './eventBus';
 export const SEED_INCIDENT_COUNT = 26;
 const SEED = 20260101;
 const TOUCH_INTERVAL_MS = 60_000;
+/** On serverless there is no long-lived timer, so expiry also runs opportunistically. */
+const CLEANUP_PROBABILITY = 0.05;
 
 /**
  * Demo sessions isolate each visitor's workspace. A session id is an opaque
@@ -22,40 +24,53 @@ export class SessionService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  create(): { sessionId: string; createdAt: string; incidents: Incident[]; cursor: number } {
+  async create(): Promise<{
+    sessionId: string;
+    createdAt: string;
+    incidents: Incident[];
+    cursor: number;
+  }> {
+    if (Math.random() < CLEANUP_PROBABILITY) await this.cleanupExpired().catch(() => undefined);
     const sessionId = randomUUID();
     const createdAt = this.now().toISOString();
-    return transaction(this.db, () => {
-      this.repo.insertSession(sessionId, createdAt);
-      const incidents = this.seed(sessionId);
-      return { sessionId, createdAt, incidents, cursor: this.repo.latestEventSeq(sessionId) };
+    return this.db.transaction(async (tx) => {
+      await this.repo.insertSession(tx, sessionId, createdAt);
+      const incidents = await this.seed(tx, sessionId);
+      return {
+        sessionId,
+        createdAt,
+        incidents,
+        cursor: await this.repo.latestEventSeq(tx, sessionId),
+      };
     });
   }
 
   /** Resolves a session and refreshes its TTL. Throws structured 401s. */
-  require(sessionId: string | undefined): string {
+  async require(sessionId: string | undefined): Promise<string> {
     if (!sessionId) {
       throw new ApiError(401, 'SESSION_REQUIRED', 'Missing demo session header');
     }
-    const session = this.repo.getSession(sessionId);
+    const session = await this.repo.getSession(this.db, sessionId);
     if (!session) throw new ApiError(401, 'SESSION_NOT_FOUND', 'Unknown or expired demo session');
     const now = this.now();
     if (now.getTime() - Date.parse(session.last_seen_at) > TOUCH_INTERVAL_MS) {
-      this.repo.touchSession(sessionId, now.toISOString());
+      await this.repo.touchSession(this.db, sessionId, now.toISOString());
     }
     return sessionId;
   }
 
-  historyFloor(sessionId: string): number {
-    return this.repo.getSession(sessionId)?.history_floor ?? 0;
+  async historyFloor(sessionId: string): Promise<number> {
+    return (await this.repo.getSession(this.db, sessionId))?.history_floor ?? 0;
   }
 
   /** Wipes and reseeds ONE session. Other visitors' sessions are untouched. */
-  reset(sessionId: string): { incidents: Incident[]; cursor: number } {
-    const result = transaction(this.db, () => {
-      this.repo.clearSessionData(sessionId);
-      const incidents = this.seed(sessionId);
-      const event = this.repo.insertEvent(
+  async reset(sessionId: string): Promise<{ incidents: Incident[]; cursor: number }> {
+    const result = await this.db.transaction(async (tx) => {
+      await this.repo.lockSession(tx, sessionId);
+      await this.repo.clearSessionData(tx, sessionId);
+      const incidents = await this.seed(tx, sessionId);
+      const event = await this.repo.insertEvent(
+        tx,
         sessionId,
         'session.reset',
         null,
@@ -65,19 +80,19 @@ export class SessionService {
         this.now().toISOString(),
       );
       // Clients holding a cursor from before the reset must do a full refresh.
-      this.repo.setHistoryFloor(sessionId, event.seq);
+      await this.repo.setHistoryFloor(tx, sessionId, event.seq);
       return { incidents, cursor: event.seq, event };
     });
     this.bus.publish(sessionId, result.event);
     return { incidents: result.incidents, cursor: result.cursor };
   }
 
-  cleanupExpired(): number {
+  async cleanupExpired(): Promise<number> {
     const cutoff = new Date(this.now().getTime() - this.ttlDays * 86_400_000).toISOString();
-    return this.repo.deleteSessionsSeenBefore(cutoff);
+    return this.repo.deleteSessionsSeenBefore(this.db, cutoff);
   }
 
-  private seed(sessionId: string): Incident[] {
+  private async seed(tx: Sql, sessionId: string): Promise<Incident[]> {
     const reference = this.now().getTime();
     const incidents = generateIncidentFields(SEED, SEED_INCIDENT_COUNT).map(
       ({ ageMinutes, updatedAfterMinutes, ...fields }): Incident => {
@@ -92,10 +107,12 @@ export class SessionService {
         };
       },
     );
-    for (const incident of incidents) {
-      this.repo.insertIncident(sessionId, incident);
-      this.repo.insertIncidentVersion(sessionId, incident, null, false);
-    }
+    await this.repo.insertIncidents(tx, sessionId, incidents);
+    await this.repo.insertIncidentVersions(
+      tx,
+      sessionId,
+      incidents.map((incident) => ({ incident, mutationId: null, deleted: false })),
+    );
     return incidents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 }

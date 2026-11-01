@@ -5,11 +5,11 @@
 | Suite           | Runner                        | Where                                                | What it proves                                                                                                                                                                                                                                                                                   |
 | --------------- | ----------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Shared          | Vitest                        | `packages/shared/src/*.test.ts`                      | Every map node lies inside its sector polygon; links are valid; schemas; determinism                                                                                                                                                                                                             |
-| API             | Vitest + `fastify.inject`     | `apps/server/tests/api.test.ts`                      | CRUD, versions, 400/401/404/409/410/413/422/429 envelopes, idempotent replay, session isolation, scoped reset, event cursor, security headers                                                                                                                                                    |
+| API             | Vitest + `fastify.inject`     | `apps/server/tests/api.test.ts`                      | CRUD, versions, 400/401/404/409/410/413/422/429 envelopes, idempotent replay, 5 simultaneous retries applied once, racing updates (one 409), poll mode, session isolation, scoped reset, event cursor, security headers                                                                          |
 | Unit            | Vitest                        | `apps/web/src/**/*.test.ts`                          | Retry delays and caps, error classification, transport simulator (disconnect, latency, seeded failures, dropped response), connection-state derivation, queue ordering and rebasing, delete-after-create, retry parking, filters/search/sort, URL round trip, map aggregation, load-test indexes |
 | Monitor (MSW)   | Vitest + MSW                  | `ConnectivityMonitor.test.ts`                        | Reachability comes from the backend, not `navigator.onLine`                                                                                                                                                                                                                                      |
 | Component       | Vitest + RTL + fake-indexeddb | `IncidentEditor.test.tsx`, `ConflictDialog.test.tsx` | Accessible validation errors, local write + queued mutation, field-level conflict diff, keep-mine and accept-server actions                                                                                                                                                                      |
-| **Integration** | Vitest (node) + real Fastify  | `SyncEngine.integration.test.ts`                     | The real sync engine and Dexie over real HTTP against the real server (in-memory SQLite)                                                                                                                                                                                                         |
+| **Integration** | Vitest (node) + real Fastify  | `SyncEngine.integration.test.ts`                     | The real sync engine and Dexie over real HTTP against the real server (in-memory PGlite Postgres)                                                                                                                                                                                                |
 | **E2E**         | Playwright (Chromium)         | `tests/e2e/*.spec.ts`                                | The production build with its service worker, served by the production server                                                                                                                                                                                                                    |
 
 The integration suite covers: online create, offline create plus three edits
@@ -46,7 +46,7 @@ pnpm test:e2e
 ```
 
 `pnpm test` runs the unit, component and integration tests. `pnpm test:e2e`
-builds, then starts the production server on :4173 with a throwaway SQLite
+builds, then starts the production server on :4173 with a throwaway PGlite
 database. If Chromium is missing, install it first:
 
 ```bash
@@ -124,6 +124,7 @@ persists across reloads.
 - The built-in browser pane used during development refused to register service workers (`An unknown error occurred when fetching the script`), even though the server returned `/sw.js` with a 200. Playwright's Chromium registers and uses the worker normally, as test 1 shows.
 - Test 7 cannot guarantee that the reload lands exactly while a request is in flight. It asserts the outcome (no loss, no duplicates), which holds in every timing.
 - Docker was not available on the development machine, so the image has not been built locally. CI builds it.
+- The `pg` driver path (Neon) is not covered by the automated suites, which use PGlite. Before the first deploy, the bundled Vercel function was exercised through `pg` against a Postgres wire-protocol server (PGlite socket): health, session seeding, idempotent replay, 409 conflict, event feed, and the disabled stream.
 
 ### Reproducing a failure
 
@@ -139,4 +140,4 @@ Then open the trace:
 pnpm exec playwright show-trace test-results/<test-dir>/trace.zip
 ```
 
-Unit and integration tests run in isolation (fresh fake-indexeddb database, in-memory SQLite) and need no services.
+Unit and integration tests run in isolation (fresh fake-indexeddb database, in-memory PGlite Postgres) and need no services.

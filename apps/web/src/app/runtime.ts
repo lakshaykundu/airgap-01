@@ -86,6 +86,7 @@ export class Runtime {
       api: this.api,
       getSessionId: () => this.sessionId,
       canConnect: () => this.canReachBackend(),
+      preferPolling: () => this.monitor.getSnapshot().realtimeTransport === 'poll',
       onModeChange: (mode) => store.dispatch(connectivityActions.realtimeUpdated(mode)),
     });
   }

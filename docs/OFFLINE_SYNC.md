@@ -84,8 +84,8 @@ next attempt at `nextRetryAt` — no tight loops. Returning connectivity or
 ## 5. Idempotency
 
 Every write carries `Idempotency-Key: <mutation.id>`. On the server
-(`apps/server/src/services/incidentService.ts`), inside one `BEGIN IMMEDIATE`
-transaction:
+(`apps/server/src/services/incidentService.ts`), inside one transaction that first
+row-locks the demo session:
 
 1. look up `(session_id, mutation_id)` in `processed_mutations`;
 2. if present and the request hash matches → return the stored status/body with
@@ -161,7 +161,7 @@ sequenceDiagram
     participant IDB as IndexedDB
     participant E as SyncEngine
     participant API
-    participant DB as SQLite
+    participant DB as Postgres
     U->>UI: Create incident (offline)
     UI->>IDB: tx{ put incident v0 · add CREATE (key K) }
     IDB-->>UI: live query → row shows PENDING
@@ -185,7 +185,7 @@ sequenceDiagram
     participant E as SyncEngine
     participant T as Transport
     participant API
-    participant DB as SQLite
+    participant DB as Postgres
     E->>T: POST /api/incidents (key K)
     T->>API: request
     API->>DB: BEGIN · insert · store K→201 · COMMIT

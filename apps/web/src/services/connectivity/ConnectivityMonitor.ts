@@ -11,6 +11,8 @@ export interface ConnectivitySnapshot {
   /** A data/mutation request failed recently while the backend was otherwise reachable. */
   degraded: boolean;
   lastFailure: string | null;
+  /** Live-change transport the server supports (from /api/health). */
+  realtimeTransport: 'sse' | 'poll' | null;
 }
 
 export interface MonitorOptions {
@@ -37,6 +39,7 @@ export class ConnectivityMonitor {
     lastLatencyMs: null,
     degraded: false,
     lastFailure: null,
+    realtimeTransport: null,
   };
   private readonly listeners = new Set<(snapshot: ConnectivitySnapshot) => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -101,6 +104,7 @@ export class ConnectivityMonitor {
         lastLatencyMs: res.durationMs,
         degraded: this.isDegraded(res.durationMs),
         lastFailure: null,
+        realtimeTransport: res.data.realtime ?? 'sse',
       });
       return true;
     } catch (error) {

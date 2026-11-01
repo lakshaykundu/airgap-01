@@ -13,6 +13,7 @@ export default tseslint.config(
       'playwright-report/**',
       'test-results/**',
       '.e2e/**',
+      '.vercel/**',
     ],
   },
   js.configs.recommended,

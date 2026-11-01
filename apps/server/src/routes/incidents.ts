@@ -53,8 +53,8 @@ export function incidentRoutes(app: FastifyInstance, ctx: AppContext): void {
     { preHandler: withSession },
     async (request): Promise<ListIncidentsResponse> => {
       // Cursor first, then rows: any change racing this read is redelivered via /api/events.
-      const cursor = ctx.repo.latestEventSeq(request.sessionId);
-      return { incidents: ctx.repo.listIncidents(request.sessionId), cursor };
+      const cursor = await ctx.repo.latestEventSeq(ctx.db, request.sessionId);
+      return { incidents: await ctx.repo.listIncidents(ctx.db, request.sessionId), cursor };
     },
   );
 
@@ -63,7 +63,7 @@ export function incidentRoutes(app: FastifyInstance, ctx: AppContext): void {
     { preHandler: withSession },
     async (request): Promise<IncidentResponse> => {
       const { id } = parseOrThrow(idParams, request.params);
-      const stored = ctx.repo.getIncident(request.sessionId, id);
+      const stored = await ctx.repo.getIncident(ctx.db, request.sessionId, id);
       if (!stored) throw new ApiError(404, 'NOT_FOUND', 'Incident not found');
       if (stored.deletedAt) throw new ApiError(410, 'INCIDENT_DELETED', 'Incident was deleted');
       return { incident: stored.incident };
@@ -76,7 +76,7 @@ export function incidentRoutes(app: FastifyInstance, ctx: AppContext): void {
     async (request, reply) => {
       const key = requireIdempotencyKey(request);
       const body = parseOrThrow(createIncidentBodySchema, request.body);
-      return sendMutation(reply, ctx.incidents.create(request.sessionId, key, body));
+      return sendMutation(reply, await ctx.incidents.create(request.sessionId, key, body));
     },
   );
 
@@ -87,7 +87,7 @@ export function incidentRoutes(app: FastifyInstance, ctx: AppContext): void {
       const key = requireIdempotencyKey(request);
       const { id } = parseOrThrow(idParams, request.params);
       const body = parseOrThrow(updateIncidentBodySchema, request.body);
-      return sendMutation(reply, ctx.incidents.update(request.sessionId, key, id, body));
+      return sendMutation(reply, await ctx.incidents.update(request.sessionId, key, id, body));
     },
   );
 
@@ -98,7 +98,10 @@ export function incidentRoutes(app: FastifyInstance, ctx: AppContext): void {
       const key = requireIdempotencyKey(request);
       const { id } = parseOrThrow(idParams, request.params);
       const { baseVersion } = parseOrThrow(deleteQuery, request.query);
-      return sendMutation(reply, ctx.incidents.delete(request.sessionId, key, id, baseVersion));
+      return sendMutation(
+        reply,
+        await ctx.incidents.delete(request.sessionId, key, id, baseVersion),
+      );
     },
   );
 }

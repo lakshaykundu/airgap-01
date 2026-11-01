@@ -47,7 +47,7 @@ export function ConnectivityBadge({ compact = false }: { compact?: boolean }) {
             {realtime === 'live'
               ? 'SSE stream live'
               : realtime === 'polling'
-                ? 'polling fallback'
+                ? 'polling every 5 s'
                 : realtime}
           </dd>
         </dl>

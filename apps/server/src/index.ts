@@ -10,8 +10,9 @@ config.webDistPath ??= fileURLToPath(new URL('../../web/dist', import.meta.url))
 const { app, ctx } = await buildApp(config);
 
 const cleanup = () => {
-  const removed = ctx.sessions.cleanupExpired();
-  if (removed > 0) app.log.info({ removed }, 'Expired demo sessions removed');
+  void ctx.sessions.cleanupExpired().then((removed) => {
+    if (removed > 0) app.log.info({ removed }, 'Expired demo sessions removed');
+  });
 };
 cleanup();
 const cleanupTimer = setInterval(cleanup, 60 * 60 * 1000);

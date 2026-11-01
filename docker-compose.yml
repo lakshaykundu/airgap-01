@@ -15,7 +15,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      DATABASE_PATH: /data/airgap.sqlite
+      DATABASE_PATH: /data/pgdata
       DEMO_SESSION_TTL_DAYS: 7
     volumes:
       - airgap-data:/data

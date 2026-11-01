@@ -9,7 +9,7 @@ import {
   type UpdateIncidentBody,
   pickIncidentFields,
 } from '@airgap/shared';
-import { transaction, type Database } from '../database/db';
+import type { Database, Sql } from '../database/db';
 import type { Repository } from '../database/repository';
 import { ApiError } from '../utils/errors';
 import type { EventBus } from './eventBus';
@@ -21,6 +21,12 @@ export interface MutationResult<T> {
   body: T;
   /** True when this response was served from the idempotency store. */
   replayed: boolean;
+}
+
+interface Applied<T> {
+  statusCode: number;
+  body: T;
+  events: ServerEvent[];
 }
 
 const EVENTS_RETAINED_PER_SESSION = 5000;
@@ -42,6 +48,10 @@ function hashRequest(kind: MutationKind, entityId: string, payload: unknown): st
  *    were based on. The version check is part of the UPDATE's WHERE clause, so
  *    check-and-write is atomic.
  *
+ * Each write transaction first row-locks its demo session, so concurrent
+ * requests for one session (two tabs, a retry racing the original) are
+ * serialized and cannot both pass the idempotency check.
+ *
  * Failed attempts (conflicts, validation errors) are NOT recorded as processed:
  * they change nothing, and the client resolves them with a brand-new mutation.
  */
@@ -58,42 +68,51 @@ export class IncidentService {
     sessionId: string,
     mutationId: string,
     body: CreateIncidentBody,
-  ): MutationResult<IncidentResponse> {
-    return this.runIdempotent(sessionId, mutationId, 'CREATE_INCIDENT', body.id, body, () => {
-      const existing = this.repo.getIncident(sessionId, body.id);
-      if (existing) {
-        throw new ApiError(409, 'ALREADY_EXISTS', 'An incident with this id already exists', {
-          incidentId: body.id,
-        });
-      }
-      if (this.repo.countLiveIncidents(sessionId) >= this.maxIncidentsPerSession) {
-        throw new ApiError(
-          422,
-          'LIMIT_REACHED',
-          'This demo session has reached its incident limit',
+  ): Promise<MutationResult<IncidentResponse>> {
+    return this.runIdempotent(
+      sessionId,
+      mutationId,
+      'CREATE_INCIDENT',
+      body.id,
+      body,
+      async (tx) => {
+        if (await this.repo.getIncident(tx, sessionId, body.id)) {
+          throw new ApiError(409, 'ALREADY_EXISTS', 'An incident with this id already exists', {
+            incidentId: body.id,
+          });
+        }
+        if ((await this.repo.countLiveIncidents(tx, sessionId)) >= this.maxIncidentsPerSession) {
+          throw new ApiError(
+            422,
+            'LIMIT_REACHED',
+            'This demo session has reached its incident limit',
+          );
+        }
+        const now = this.now().toISOString();
+        const createdAt = body.createdAt && body.createdAt <= now ? body.createdAt : now;
+        const incident: Incident = {
+          ...pickIncidentFields(body),
+          id: body.id,
+          createdAt: new Date(createdAt).toISOString(),
+          updatedAt: now,
+          version: 1,
+        };
+        await this.repo.insertIncidents(tx, sessionId, [incident]);
+        await this.repo.insertIncidentVersions(tx, sessionId, [
+          { incident, mutationId, deleted: false },
+        ]);
+        const event = await this.recordEvent(
+          tx,
+          sessionId,
+          'incident.created',
+          incident,
+          incident.id,
+          mutationId,
+          'client',
         );
-      }
-      const now = this.now().toISOString();
-      const createdAt = body.createdAt && body.createdAt <= now ? body.createdAt : now;
-      const incident: Incident = {
-        ...pickIncidentFields(body),
-        id: body.id,
-        createdAt: new Date(createdAt).toISOString(),
-        updatedAt: now,
-        version: 1,
-      };
-      this.repo.insertIncident(sessionId, incident);
-      this.repo.insertIncidentVersion(sessionId, incident, mutationId, false);
-      const event = this.recordEvent(
-        sessionId,
-        'incident.created',
-        incident,
-        incident.id,
-        mutationId,
-        'client',
-      );
-      return { statusCode: 201, body: { incident }, events: [event] };
-    });
+        return { statusCode: 201, body: { incident }, events: [event] };
+      },
+    );
   }
 
   update(
@@ -101,36 +120,44 @@ export class IncidentService {
     mutationId: string,
     incidentId: string,
     body: UpdateIncidentBody,
-  ): MutationResult<IncidentResponse> {
-    return this.runIdempotent(sessionId, mutationId, 'UPDATE_INCIDENT', incidentId, body, () => {
-      const current = this.requireLive(sessionId, incidentId, body.baseVersion);
-      if (current.version !== body.baseVersion) throw this.conflict(current, body.baseVersion);
-      const next: Incident = {
-        ...current,
-        ...body.changes,
-        assignedTo:
-          body.changes.assignedTo === undefined ? current.assignedTo : body.changes.assignedTo,
-        updatedAt: this.now().toISOString(),
-        version: current.version + 1,
-      };
-      if (!this.repo.updateIncidentIfVersion(sessionId, next, body.baseVersion)) {
-        // Unreachable under SQLite's write lock, but kept as a defensive CAS check.
-        throw this.conflict(
-          this.repo.getIncident(sessionId, incidentId)!.incident,
-          body.baseVersion,
+  ): Promise<MutationResult<IncidentResponse>> {
+    return this.runIdempotent(
+      sessionId,
+      mutationId,
+      'UPDATE_INCIDENT',
+      incidentId,
+      body,
+      async (tx) => {
+        const current = await this.requireLive(tx, sessionId, incidentId, body.baseVersion);
+        if (current.version !== body.baseVersion) throw this.conflict(current, body.baseVersion);
+        const next: Incident = {
+          ...current,
+          ...body.changes,
+          assignedTo:
+            body.changes.assignedTo === undefined ? current.assignedTo : body.changes.assignedTo,
+          updatedAt: this.now().toISOString(),
+          version: current.version + 1,
+        };
+        if (!(await this.repo.updateIncidentIfVersion(tx, sessionId, next, body.baseVersion))) {
+          // Unreachable while the session lock is held, kept as a defensive CAS check.
+          const latest = await this.repo.getIncident(tx, sessionId, incidentId);
+          throw this.conflict(latest!.incident, body.baseVersion);
+        }
+        await this.repo.insertIncidentVersions(tx, sessionId, [
+          { incident: next, mutationId, deleted: false },
+        ]);
+        const event = await this.recordEvent(
+          tx,
+          sessionId,
+          'incident.updated',
+          next,
+          next.id,
+          mutationId,
+          'client',
         );
-      }
-      this.repo.insertIncidentVersion(sessionId, next, mutationId, false);
-      const event = this.recordEvent(
-        sessionId,
-        'incident.updated',
-        next,
-        next.id,
-        mutationId,
-        'client',
-      );
-      return { statusCode: 200, body: { incident: next }, events: [event] };
-    });
+        return { statusCode: 200, body: { incident: next }, events: [event] };
+      },
+    );
   }
 
   delete(
@@ -138,15 +165,15 @@ export class IncidentService {
     mutationId: string,
     incidentId: string,
     baseVersion: number,
-  ): MutationResult<DeleteIncidentResponse> {
+  ): Promise<MutationResult<DeleteIncidentResponse>> {
     return this.runIdempotent(
       sessionId,
       mutationId,
       'DELETE_INCIDENT',
       incidentId,
       { baseVersion },
-      () => {
-        const stored = this.repo.getIncident(sessionId, incidentId);
+      async (tx) => {
+        const stored = await this.repo.getIncident(tx, sessionId, incidentId);
         if (!stored) throw new ApiError(404, 'NOT_FOUND', 'Incident not found');
         if (stored.deletedAt) {
           // Deleting something already deleted is a no-op success: the intent holds.
@@ -156,15 +183,22 @@ export class IncidentService {
             events: [],
           };
         }
-        if (stored.incident.version !== baseVersion)
+        if (stored.incident.version !== baseVersion) {
           throw this.conflict(stored.incident, baseVersion);
+        }
         const now = this.now().toISOString();
-        if (!this.repo.tombstoneIncidentIfVersion(sessionId, incidentId, baseVersion, now)) {
-          throw this.conflict(this.repo.getIncident(sessionId, incidentId)!.incident, baseVersion);
+        if (
+          !(await this.repo.tombstoneIncidentIfVersion(tx, sessionId, incidentId, baseVersion, now))
+        ) {
+          const latest = await this.repo.getIncident(tx, sessionId, incidentId);
+          throw this.conflict(latest!.incident, baseVersion);
         }
         const tombstone = { ...stored.incident, updatedAt: now, version: baseVersion + 1 };
-        this.repo.insertIncidentVersion(sessionId, tombstone, mutationId, true);
-        const event = this.recordEvent(
+        await this.repo.insertIncidentVersions(tx, sessionId, [
+          { incident: tombstone, mutationId, deleted: true },
+        ]);
+        const event = await this.recordEvent(
+          tx,
           sessionId,
           'incident.deleted',
           tombstone,
@@ -182,18 +216,21 @@ export class IncidentService {
   }
 
   /** Demo-only: a "colleague" edits an incident directly on the server. */
-  remoteEdit(
+  async remoteEdit(
     sessionId: string,
     incidentId?: string,
-  ): { incident: Incident; changedFields: string[] } {
-    const { result, events } = transaction(this.db, () => {
+  ): Promise<{ incident: Incident; changedFields: string[] }> {
+    const { result, events } = await this.db.transaction(async (tx) => {
+      await this.repo.lockSession(tx, sessionId);
       let target: Incident | undefined;
       if (incidentId) {
-        const stored = this.repo.getIncident(sessionId, incidentId);
-        if (!stored || stored.deletedAt) throw new ApiError(404, 'NOT_FOUND', 'Incident not found');
+        const stored = await this.repo.getIncident(tx, sessionId, incidentId);
+        if (!stored || stored.deletedAt) {
+          throw new ApiError(404, 'NOT_FOUND', 'Incident not found');
+        }
         target = stored.incident;
       } else {
-        const live = this.repo.listIncidents(sessionId);
+        const live = await this.repo.listIncidents(tx, sessionId);
         target = live.find((incident) => incident.status !== 'resolved') ?? live[0];
         if (!target) throw new ApiError(404, 'NOT_FOUND', 'No incidents available to edit');
       }
@@ -213,9 +250,12 @@ export class IncidentService {
         updatedAt: this.now().toISOString(),
         version: target.version + 1,
       };
-      this.repo.updateIncidentIfVersion(sessionId, next, target.version);
-      this.repo.insertIncidentVersion(sessionId, next, null, false);
-      const event = this.recordEvent(
+      await this.repo.updateIncidentIfVersion(tx, sessionId, next, target.version);
+      await this.repo.insertIncidentVersions(tx, sessionId, [
+        { incident: next, mutationId: null, deleted: false },
+      ]);
+      const event = await this.recordEvent(
+        tx,
         sessionId,
         'incident.updated',
         next,
@@ -232,8 +272,13 @@ export class IncidentService {
     return result;
   }
 
-  private requireLive(sessionId: string, incidentId: string, baseVersion: number): Incident {
-    const stored = this.repo.getIncident(sessionId, incidentId);
+  private async requireLive(
+    tx: Sql,
+    sessionId: string,
+    incidentId: string,
+    baseVersion: number,
+  ): Promise<Incident> {
+    const stored = await this.repo.getIncident(tx, sessionId, incidentId);
     if (!stored) throw new ApiError(404, 'NOT_FOUND', 'Incident not found');
     if (stored.deletedAt) {
       const details: ConflictDetails = {
@@ -264,15 +309,17 @@ export class IncidentService {
     );
   }
 
-  private recordEvent(
+  private async recordEvent(
+    tx: Sql,
     sessionId: string,
     type: ServerEvent['type'],
     incident: Incident | null,
     incidentId: string | null,
     mutationId: string | null,
     source: ServerEvent['source'],
-  ): ServerEvent {
-    const event = this.repo.insertEvent(
+  ): Promise<ServerEvent> {
+    const event = await this.repo.insertEvent(
+      tx,
       sessionId,
       type,
       incident,
@@ -282,22 +329,25 @@ export class IncidentService {
       this.now().toISOString(),
     );
     if (event.seq % 250 === 0) {
-      this.repo.pruneEvents(sessionId, EVENTS_RETAINED_PER_SESSION);
+      await this.repo.pruneEvents(tx, sessionId, EVENTS_RETAINED_PER_SESSION);
     }
     return event;
   }
 
-  private runIdempotent<T>(
+  private async runIdempotent<T>(
     sessionId: string,
     mutationId: string,
     kind: MutationKind,
     entityId: string,
     payload: unknown,
-    apply: () => { statusCode: number; body: T; events: ServerEvent[] },
-  ): MutationResult<T> {
+    apply: (tx: Sql) => Promise<Applied<T>>,
+  ): Promise<MutationResult<T>> {
     const requestHash = hashRequest(kind, entityId, payload);
-    const outcome = transaction(this.db, () => {
-      const processed = this.repo.getProcessedMutation(sessionId, mutationId);
+    const outcome = await this.db.transaction(async (tx) => {
+      if (!(await this.repo.lockSession(tx, sessionId))) {
+        throw new ApiError(401, 'SESSION_NOT_FOUND', 'Unknown or expired demo session');
+      }
+      const processed = await this.repo.getProcessedMutation(tx, sessionId, mutationId);
       if (processed) {
         if (processed.request_hash !== requestHash) {
           throw new ApiError(
@@ -313,8 +363,9 @@ export class IncidentService {
           events: [] as ServerEvent[],
         };
       }
-      const applied = apply();
-      this.repo.insertProcessedMutation(
+      const applied = await apply(tx);
+      await this.repo.insertProcessedMutation(
+        tx,
         sessionId,
         mutationId,
         kind,

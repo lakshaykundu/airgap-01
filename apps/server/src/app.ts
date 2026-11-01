@@ -25,19 +25,19 @@ export interface BuiltApp {
 
 export async function buildApp(config: ServerConfig): Promise<BuiltApp> {
   const app = Fastify({
-    logger:
-      config.env === 'test' ? false : { level: config.env === 'production' ? 'info' : 'warn' },
+    // Health probes arrive every few seconds per client: log warnings and errors,
+    // not every request.
+    logger: config.env === 'test' ? false : { level: 'warn' },
     bodyLimit: 32 * 1024,
-    // Health probes arrive every few seconds per client; log errors, not every request.
-    disableRequestLogging: true,
     trustProxy: true,
   });
 
-  const db = openDatabase(config.databasePath);
-  const repo = new Repository(db);
+  const db = await openDatabase(config);
+  const repo = new Repository();
   const bus = new EventBus();
   const ctx: AppContext = {
     config,
+    db,
     repo,
     bus,
     sessions: new SessionService(db, repo, bus, config.sessionTtlDays),

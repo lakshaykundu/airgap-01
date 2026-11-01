@@ -21,6 +21,7 @@ const initialState: ConnectivityState = {
     lastLatencyMs: null,
     degraded: false,
     lastFailure: null,
+    realtimeTransport: null,
   },
   sync: {
     phase: 'idle',

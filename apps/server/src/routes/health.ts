@@ -7,5 +7,6 @@ export function healthRoutes(app: FastifyInstance, ctx: AppContext): void {
     ok: true,
     time: new Date().toISOString(),
     uptimeSeconds: Math.round((Date.now() - ctx.startedAt) / 1000),
+    realtime: ctx.config.realtime,
   }));
 }

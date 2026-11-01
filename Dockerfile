@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # ── AIRGAP/01 · single-origin production image ──────────────────────────────
 # One Node process serves the API (Fastify) AND the built PWA, so the service
-# worker, SSE and API share an origin. SQLite lives on a mounted volume.
+# worker, SSE and API share an origin. Postgres runs embedded (PGlite) on a
+# mounted volume unless DATABASE_URL points at an external database.
 
 FROM node:24-bookworm-slim AS base
 RUN npm install -g pnpm@10.34.9
@@ -31,7 +32,7 @@ FROM base AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0 \
-    DATABASE_PATH=/data/airgap.sqlite
+    DATABASE_PATH=/data/pgdata
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml ./
 COPY --from=build /app/apps/server/package.json apps/server/
 COPY --from=build /app/packages/shared packages/shared

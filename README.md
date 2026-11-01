@@ -32,7 +32,7 @@ fictional.
   - It retries with exponential backoff and jitter, up to a limit, and shows permanent failures to the user.
   - It holds a cross-tab lock (Web Locks, with a localStorage-lease fallback) and uses BroadcastChannel.
   - It recovers syncs interrupted by a reload or crash.
-- **Server guarantees.** The server is Fastify plus SQLite. Each write is applied in the same transaction as its idempotency record, and optimistic concurrency returns a structured 409. Writes are validated with Zod. Each visitor gets an isolated demo session, and rate limits and CSP are in place.
+- **Server guarantees.** The server is Fastify plus Postgres (Neon on Vercel, embedded PGlite locally). Each write is applied in the same transaction as its idempotency record, and optimistic concurrency returns a structured 409. Writes are validated with Zod. Each visitor gets an isolated demo session, and rate limits and CSP are in place.
 - **Conflict resolution.** The SYNC CONFLICT DETECTED dialog shows a field-level diff and offers three choices: **Keep my changes**, **Accept server version** and **Review & merge**.
 - **Chaos Lab.** It can simulate an API disconnect (which persists across reloads), add latency (3G / 2G / custom), inject seeded random failures (0–50%), drop the next mutation response, trigger a version conflict and reset the demo. Every control acts inside the transport.
 - **Sync visualizer.** Mutation cards move from local storage to the sync engine to the remote server as their real queue state changes.
@@ -46,11 +46,11 @@ fictional.
 | Frontend | React 19, TypeScript (strict), Vite 7, Tailwind CSS 4, Radix primitives, cmdk, Motion, Lucide, Recharts, TanStack Virtual |
 | State    | Redux Toolkit (ephemeral/URL state), Dexie 4 on IndexedDB (durable data), live queries                                    |
 | Offline  | vite-plugin-pwa (Workbox precache), Web Locks, BroadcastChannel, Server-Sent Events                                       |
-| Backend  | Node.js ≥ 22.13, Fastify 5, SQLite via built-in `node:sqlite`, Zod 4, Helmet, rate limiting                               |
+| Backend  | Node.js ≥ 22.13, Fastify 5, Postgres (`pg` for Neon, PGlite embedded), Zod 4, Helmet, rate limiting                       |
 | Testing  | Vitest, React Testing Library, MSW, fake-indexeddb, Playwright                                                            |
 | Tooling  | pnpm workspaces, ESLint 9, Prettier, Docker, GitHub Actions                                                               |
 
-> The SQLite driver is Node's built-in `node:sqlite`, which works synchronously like better-sqlite3. It needs no native compilation, so installs and Docker builds stay simple on any Node version.
+> Postgres runs embedded through PGlite (Postgres compiled to WASM) when no `DATABASE_URL` is set, so `pnpm dev`, the tests and Docker need no database server, and they run the same SQL as production.
 
 ## Getting started
 
@@ -95,18 +95,20 @@ pnpm start
 Copy `.env.example` to `.env`. Only `VITE_*` variables reach the browser, and
 they must never hold secrets.
 
-| Variable                                                                                        | Default                | Purpose                                                                     |
-| ----------------------------------------------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------- |
-| `PORT`                                                                                          | `3000`                 | HTTP port                                                                   |
-| `HOST`                                                                                          | `0.0.0.0`              | Bind address                                                                |
-| `DATABASE_PATH`                                                                                 | `./data/airgap.sqlite` | SQLite file (put it on a persistent volume in prod)                         |
-| `DEMO_SESSION_TTL_DAYS`                                                                         | `7`                    | Idle demo sessions are deleted after this many days                         |
-| `MUTATION_RATE_LIMIT_PER_MINUTE`                                                                | `240`                  | Mutations per session per minute                                            |
-| `SESSION_RATE_LIMIT_PER_HOUR`                                                                   | `30`                   | New demo sessions per IP per hour                                           |
-| `WEB_DIST_PATH`                                                                                 | `apps/web/dist`        | Built PWA to serve (single origin)                                          |
-| `VITE_APP_NAME`                                                                                 | `AIRGAP/01`            | Display name                                                                |
-| `VITE_GITHUB_URL`, `VITE_PORTFOLIO_URL`, `VITE_VIDEO_URL`, `VITE_RESUME_URL`, `VITE_SOURCE_URL` | empty                  | "Built by" links. Empty links are **hidden**, never shown as broken buttons |
-| `VITE_CONTACT_EMAIL`, `VITE_CONTACT_PHONE`                                                      | empty                  | Contact buttons (hidden when empty)                                         |
+| Variable                                                                                        | Default                  | Purpose                                                                     |
+| ----------------------------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------- |
+| `PORT`                                                                                          | `3000`                   | HTTP port                                                                   |
+| `HOST`                                                                                          | `0.0.0.0`                | Bind address                                                                |
+| `DATABASE_URL`                                                                                  | empty                    | Postgres connection string (Neon sets it on Vercel)                         |
+| `DATABASE_PATH`                                                                                 | `./data/pgdata`          | Embedded PGlite directory, used when `DATABASE_URL` is empty                |
+| `REALTIME_MODE`                                                                                 | `sse` (`poll` on Vercel) | Live changes via an SSE stream, or client polling                           |
+| `DEMO_SESSION_TTL_DAYS`                                                                         | `7`                      | Idle demo sessions are deleted after this many days                         |
+| `MUTATION_RATE_LIMIT_PER_MINUTE`                                                                | `240`                    | Mutations per session per minute                                            |
+| `SESSION_RATE_LIMIT_PER_HOUR`                                                                   | `30`                     | New demo sessions per IP per hour                                           |
+| `WEB_DIST_PATH`                                                                                 | `apps/web/dist`          | Built PWA to serve (single origin)                                          |
+| `VITE_APP_NAME`                                                                                 | `AIRGAP/01`              | Display name                                                                |
+| `VITE_GITHUB_URL`, `VITE_PORTFOLIO_URL`, `VITE_VIDEO_URL`, `VITE_RESUME_URL`, `VITE_SOURCE_URL` | empty                    | "Built by" links. Empty links are **hidden**, never shown as broken buttons |
+| `VITE_CONTACT_EMAIL`, `VITE_CONTACT_PHONE`                                                      | empty                    | Contact buttons (hidden when empty)                                         |
 
 ## Demo
 
@@ -124,7 +126,7 @@ React UI ─▶ Redux (UI state) / Dexie live queries ─▶ IndexedDB ─▶ Mu
    └──── Service worker (app shell only)            Sync engine ◀────┘
                                                         │ idempotency key + baseVersion
                                                         ▼
-                                          Fastify API ─▶ SQLite (versions, processed keys, events)
+                                          Fastify API ─▶ Postgres (versions, processed keys, events)
                                                         │
                                           SSE / polling change feed ─▶ IndexedDB
 ```
@@ -137,29 +139,38 @@ These documents cover the design in more depth:
 
 ## Deployment
 
-The app deploys as **one** Node service. The same origin serves the API and the
-PWA, which keeps the service worker, SSE and fetch free of CORS concerns.
+### Vercel (live demo)
 
-### Docker
+The repository deploys to Vercel as-is. `vercel.json` runs `pnpm vercel-build`,
+which emits [Build Output API v3](https://vercel.com/docs/build-output-api):
+
+- the PWA as static files on Vercel's CDN, with CSP, HSTS and cache headers (`/assets/*` immutable; `sw.js`, HTML and the manifest revalidate);
+- `/api/*` as one Node.js function running the same Fastify app (`apps/server/src/vercel.ts`);
+- `REALTIME_MODE=poll`: clients poll the change feed every 5 s rather than holding a stream open in a function.
+
+Setup:
+
+1. Import the GitHub repo into Vercel (framework: Other). The build settings come from `vercel.json`.
+2. **Add a Postgres database:** Project → Storage → **Neon** (free tier). It injects `DATABASE_URL`. Tables are created on first request.
+3. Optionally add the public `VITE_GITHUB_URL`, `VITE_PORTFOLIO_URL` and similar links, then redeploy.
+
+Vercel serves over HTTPS, so the service worker and the offline features work.
+Rate limits are kept in memory per function instance, so they are approximate
+on serverless.
+
+### Docker / any long-running Node host
 
 ```bash
 docker compose up --build
 ```
 
-This builds the image and runs it on <http://localhost:3000>, with SQLite on the
-named volume `airgap-data`. The image runs as a non-root user and includes a
-`HEALTHCHECK` on `/api/health`.
+This runs one process on <http://localhost:3000> that serves the PWA and the
+API, with Server-Sent Events. Without `DATABASE_URL`, Postgres runs embedded
+(PGlite) in the named volume `airgap-data` at `/data/pgdata`. Set
+`DATABASE_URL` to use an external Postgres instead. `railway.json` works for
+Railway; Fly.io and Render work the same way.
 
-### Railway (or any container host)
-
-1. Create a service from this repository. `railway.json` selects the Dockerfile and the `/api/health` health check.
-2. **Add a volume mounted at `/data`.** `DATABASE_PATH` defaults to `/data/airgap.sqlite`.
-3. Optionally set `VITE_GITHUB_URL`, `VITE_PORTFOLIO_URL` and the other public links as **build-time** variables, then redeploy.
-4. Railway terminates HTTPS. Service workers need a secure context, so the PWA's offline features work only over HTTPS (or `localhost`).
-
-> ⚠️ **Persistent storage is required.** Container filesystems are ephemeral. Without a volume, every redeploy or restart wipes the SQLite file and all demo sessions. Browsers that still hold an old session id get `SESSION_NOT_FOUND`. The client then creates a new session automatically and replays pending creates into it.
-
-Fly.io, Render and any other host that runs a Dockerfile with a persistent disk work the same way.
+> ⚠️ **Persistent storage is required.** Container filesystems are ephemeral. Without a volume or an external `DATABASE_URL`, every redeploy wipes all demo sessions. Browsers that still hold an old session id get `SESSION_NOT_FOUND`. The client then creates a new session automatically and replays pending creates into it.
 
 ## Project limitations
 

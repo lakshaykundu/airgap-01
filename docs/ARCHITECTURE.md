@@ -2,11 +2,11 @@
 
 AIRGAP/01 is a pnpm monorepo with three packages:
 
-| Package           | Role                                                                          |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `packages/shared` | Zod schemas, TypeScript types, API contracts, fictional topology, seeded PRNG |
-| `apps/server`     | Fastify API + SQLite (`node:sqlite`); also serves the built PWA in production |
-| `apps/web`        | React 19 + Vite PWA: UI, IndexedDB (Dexie), mutation queue, sync engine       |
+| Package           | Role                                                                                             |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| `packages/shared` | Zod schemas, TypeScript types, API contracts, fictional topology, seeded PRNG                    |
+| `apps/server`     | Fastify API + Postgres (Neon on Vercel, embedded PGlite elsewhere); can also serve the built PWA |
+| `apps/web`        | React 19 + Vite PWA: UI, IndexedDB (Dexie), mutation queue, sync engine                          |
 
 ```mermaid
 flowchart TD
@@ -23,7 +23,7 @@ flowchart TD
     SW[[Service worker<br/>Workbox precache of the app shell]]
     Locks{{Web Locks + BroadcastChannel<br/>cross-tab coordination}}
     API[Fastify API<br/>Zod validation · idempotency · optimistic concurrency]
-    DB[(SQLite<br/>sessions · incidents · incident_versions<br/>processed_mutations · events)]
+    DB[(Postgres<br/>sessions · incidents · incident_versions<br/>processed_mutations · events)]
 
     UI --> Redux
     UI --> Hooks --> IDB
@@ -45,7 +45,7 @@ There is exactly one owner for each kind of data — no conflicting duplicate co
 | Incidents (local view), mutation queue, cursor, session id, activity   | **IndexedDB** (Dexie)       | Must survive reloads and work offline; shared by every tab        |
 | Filters, open panels, selections, simulator config, connectivity state | **Redux Toolkit**           | Ephemeral or derived UI state; filters are mirrored to the URL    |
 | Form drafts, hover state, merge selections                             | React component state       | Local to one component                                            |
-| Authoritative incidents and versions                                   | **SQLite** on the server    | The server assigns versions and decides conflicts                 |
+| Authoritative incidents and versions                                   | **Postgres** on the server  | The server assigns versions and decides conflicts                 |
 | App shell (HTML, JS, CSS, fonts, icons)                                | **Service worker** precache | Lets the console boot with no network; never caches API responses |
 
 Durable data is never copied into Redux. Components read IndexedDB through
@@ -96,9 +96,21 @@ write always also wakes the sync engine and notifies other tabs.
 - **Fastify 5**, 32 KB body limit, Helmet (CSP, HSTS, nosniff…), per-route
   rate limits (mutations per session, session creation per IP), structured
   error envelope `{ error: { code, message, details? } }`, no stack traces.
-- **SQLite via `node:sqlite`** (Node's built-in synchronous driver — same
-  model as better-sqlite3, without a native build step). WAL mode;
-  `BEGIN IMMEDIATE` transactions.
+- **Postgres**, through one small `Database` interface with two drivers:
+  `pg` when `DATABASE_URL` is set (Neon on Vercel), and **PGlite** — Postgres
+  compiled to WASM, embedded in the process — for local dev, tests and the
+  single-container Docker image. Same SQL dialect everywhere, so tests run the
+  production queries. Each write transaction starts with
+  `SELECT … FROM sessions WHERE id = $1 FOR UPDATE`, serializing writes within
+  one demo workspace (retries and racing tabs cannot both pass the idempotency
+  check). The schema is created idempotently on startup under an advisory lock.
+- **Deployment shapes.** As a long-running process (`pnpm start`, Docker) the
+  server also serves the PWA and streams SSE. On **Vercel**, a build step
+  (`scripts/build-vercel.mjs`) emits Build Output API v3: the PWA is served by
+  the CDN with CSP/HSTS/cache headers, and `/api/*` runs the same Fastify app
+  in one Node.js function (`apps/server/src/vercel.ts`). There, `REALTIME_MODE`
+  is `poll`: `/api/health` tells clients to poll `/api/events` every 5 s instead
+  of holding a stream open, which would pin a function instance.
 - **IncidentService** applies every write inside one transaction together
   with its idempotency record (see [OFFLINE_SYNC.md](./OFFLINE_SYNC.md)).
 - **Events**: every committed change appends to an `events` table (global

@@ -11,6 +11,8 @@ export interface RealtimeOptions {
   getSessionId: () => string | undefined;
   /** False while offline or while the simulated disconnect is active. */
   canConnect: () => boolean;
+  /** True when the server says it cannot hold streams open (serverless): poll instead. */
+  preferPolling?: () => boolean;
   onModeChange?: (mode: RealtimeMode) => void;
   pollIntervalMs?: number;
   sseRetryMs?: number;
@@ -45,6 +47,10 @@ export class RealtimeChannel {
       return;
     }
     if (this.source || this.pollTimer || this.connectingFor === sessionId) return;
+    if (this.options.preferPolling?.()) {
+      this.startPolling();
+      return;
+    }
     void this.openStream(sessionId);
   }
 
@@ -112,7 +118,7 @@ export class RealtimeChannel {
       this.enqueue(() => pullEvents(this.options.db, this.options.api));
     };
     poll();
-    this.pollTimer = setInterval(poll, this.options.pollIntervalMs ?? 10_000);
+    this.pollTimer = setInterval(poll, this.options.pollIntervalMs ?? 5_000);
   }
 
   private stopPolling(): void {
