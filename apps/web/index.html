@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#05070d" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="AIRGAP/01 — an offline-first operations console. NO SIGNAL. STILL IN CONTROL."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <title>AIRGAP/01 — No signal. Still in control.</title>
+    <style>
+      /* Pre-boot splash: paints before any JavaScript loads; React replaces #root on mount. */
+      html,
+      body {
+        margin: 0;
+        background: #05070d;
+        color: #f5f7fa;
+      }
+      .preboot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-family: ui-monospace, Menlo, monospace;
+      }
+      .preboot p {
+        margin: 0;
+      }
+      .preboot .t {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: 0.18em;
+      }
+      .preboot .t span {
+        color: #24e5c0;
+      }
+      .preboot .s {
+        margin-top: 6px;
+        font-size: 10.5px;
+        letter-spacing: 0.14em;
+        color: #7b8aa3;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="preboot" role="status" aria-label="Loading">
+        <div style="width: min(440px, calc(100vw - 32px))">
+          <p class="t">AIRGAP<span>/</span>01</p>
+          <p class="s">INITIALIZING OPERATIONS CONSOLE</p>
+        </div>
+      </div>
+    </div>
+    <noscript>AIRGAP/01 requires JavaScript.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

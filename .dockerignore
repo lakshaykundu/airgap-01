@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+.git
+.e2e
+data
+coverage
+test-results
+playwright-report
+docs/screenshots
+*.sqlite*
+.env

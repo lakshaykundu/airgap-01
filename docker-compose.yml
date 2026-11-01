@@ -1,0 +1,25 @@
+# Local production test: docker compose up --build  →  http://localhost:3000
+services:
+  airgap:
+    build:
+      context: .
+      args:
+        VITE_GITHUB_URL: ${VITE_GITHUB_URL:-}
+        VITE_PORTFOLIO_URL: ${VITE_PORTFOLIO_URL:-}
+        VITE_VIDEO_URL: ${VITE_VIDEO_URL:-}
+        VITE_RESUME_URL: ${VITE_RESUME_URL:-}
+        VITE_CONTACT_EMAIL: ${VITE_CONTACT_EMAIL:-}
+        VITE_SOURCE_URL: ${VITE_SOURCE_URL:-}
+    ports:
+      - '3000:3000'
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_PATH: /data/airgap.sqlite
+      DEMO_SESSION_TTL_DAYS: 7
+    volumes:
+      - airgap-data:/data
+    restart: unless-stopped
+
+volumes:
+  airgap-data:

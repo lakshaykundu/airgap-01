@@ -1,0 +1,37 @@
+{
+  "name": "airgap-01",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AIRGAP/01 \u2014 an offline-first operations console. NO SIGNAL. STILL IN CONTROL.",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,magenta \"pnpm --filter @airgap/server dev\" \"pnpm --filter @airgap/web dev\"",
+    "build": "pnpm --filter @airgap/web build && pnpm --filter @airgap/server build",
+    "start": "pnpm --filter @airgap/server start",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.e2e.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm build && playwright test",
+    "test:all": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm test:e2e",
+    "screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@playwright/test": "1.64.0",
+    "concurrently": "^9.2.0",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
+    "eslint-plugin-react-refresh": "^0.4.20",
+    "globals": "^16.0.0",
+    "prettier": "^3.6.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "@types/node": "^24.0.0"
+  },
+  "type": "module"
+}
